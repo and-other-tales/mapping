@@ -2,20 +2,25 @@
 """
 3D Tiles Downloader
 
-This script downloads 3D tiles for a specified city using Google's 3D Tiles API,
-extracts textures, creates a mosaic, and generates XYZ tiles.
+This script downloads 3D tiles using Google's 3D Tiles API, extracts textures,
+creates a mosaic, and generates XYZ tiles.
 
 Usage:
-    python3 3dtiles.py <city_name>              # Download and process tiles for the specified city
+    python3 3dtiles.py <region_name>           # Download and process tiles (region name is for file organization only)
     python3 3dtiles.py test                     # Run in test mode without API key
-    python3 3dtiles.py process [city_name]      # Process existing downloaded tiles without API access
+    python3 3dtiles.py process [region_name]    # Process existing downloaded tiles without API access
 
 Required environment variable (for download mode):
-    GOOGLE_API_KEY - Your Google API key with 3D Tiles access
+    GOOGLE_API_KEY - Your Google API key with Map Tiles API access
+
+Setup requirements:
+    1. Enable the Map Tiles API in Google Cloud Console
+    2. Create an API key with Map Tiles API permissions
+    3. Set the API key as an environment variable: export GOOGLE_API_KEY=your_api_key
 
 Output directories:
-    downloaded_tiles/<city>/ - Raw downloaded image files
-    tiles/<city>/ - Processed XYZ tiles for web mapping
+    downloaded_tiles/<region>/ - Raw downloaded image files
+    tiles/<region>/ - Processed XYZ tiles for web mapping
 """
 import os, sys, math, json, shutil, base64
 import requests
@@ -40,64 +45,279 @@ def fetch_tileset(url, session, outdir):
     os.makedirs(outdir, exist_ok=True)
     resp = session.get(url); resp.raise_for_status()
     data = resp.json()
-    # Download this tile’s content
+    
+    # Debug: Print response keys for inspection
+    print(f"API response keys: {list(data.keys())}")
+    
+    # Check for Google-specific "root" element
+    if "root" in data:
+        print("Found 'root' element in API response - using Google 3D Tiles format")
+        root = data["root"]
+        
+        # Process the nested structure of Google's 3D Tiles API
+        if "children" in root:
+            print(f"Root has {len(root['children'])} children")
+            for i, child in enumerate(root["children"]):
+                print(f"Processing root child {i+1}/{len(root['children'])}")
+                
+                # Check if this child has its own children
+                if "children" in child:
+                    print(f"Child {i+1} has {len(child['children'])} nested children")
+                    for j, nested_child in enumerate(child["children"]):
+                        print(f"Processing nested child {j+1}/{len(child['children'])}")
+                        
+                        # Process the nested child
+                        if "content" in nested_child:
+                            uri = nested_child["content"]["uri"]
+                            # Ensure URL is absolute
+                            if not uri.startswith("http"):
+                                uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
+                            
+                            # Check if URL already has parameters
+                            if "?" in uri:
+                                uri = f"{uri}&key={API_KEY}"
+                            else:
+                                uri = f"{uri}?key={API_KEY}"
+                                
+                            print(f"Found content in nested child: {uri}")
+                            r = session.get(uri, stream=True)
+                            r.raise_for_status()
+                            
+                            # Use a hash of the URL as filename to avoid long filenames
+                            import hashlib
+                            url_hash = hashlib.md5(uri.encode()).hexdigest()
+                            
+                            # Get file extension from original URL
+                            ext = os.path.splitext(uri.split("?")[0])[1] or ".bin"
+                            if not ext.startswith("."):
+                                ext = f".{ext}"
+                                
+                            fpath = os.path.join(outdir, f"tile_{url_hash}{ext}")
+                            print(f"Saving to {fpath}")
+                            with open(fpath, "wb") as f: shutil.copyfileobj(r.raw, f)
+                            extract_textures(fpath, outdir)
+                        
+                        # Continue deeper if there are more children
+                        if "children" in nested_child:
+                            for k, deep_child in enumerate(nested_child["children"]):
+                                if "content" in deep_child:
+                                    uri = deep_child["content"]["uri"]
+                                    if not uri.startswith("http"):
+                                        uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
+                                    
+                                    # Check if URL already has parameters
+                                    if "?" in uri:
+                                        uri = f"{uri}&key={API_KEY}"
+                                    else:
+                                        uri = f"{uri}?key={API_KEY}"
+                                        
+                                    print(f"Found content in deep child: {uri}")
+                                    r = session.get(uri, stream=True)
+                                    r.raise_for_status()
+                                    
+                                    # Use a hash of the URL as filename to avoid long filenames
+                                    import hashlib
+                                    url_hash = hashlib.md5(uri.encode()).hexdigest()
+                                    
+                                    # Get file extension from original URL
+                                    ext = os.path.splitext(uri.split("?")[0])[1] or ".bin"
+                                    if not ext.startswith("."):
+                                        ext = f".{ext}"
+                                        
+                                    fpath = os.path.join(outdir, f"tile_{url_hash}{ext}")
+                                    print(f"Saving to {fpath}")
+                                    with open(fpath, "wb") as f: shutil.copyfileobj(r.raw, f)
+                                    extract_textures(fpath, outdir)
+        
+        # Continue with the standard processing
+        data = root  # Update data reference to use the root element
+    
+    # Download this tile's content
     if "content" in data:
         uri = data["content"]["uri"]
+        # Ensure URL is absolute
+        if not uri.startswith("http"):
+            uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
+        
+        # Check if URL already has parameters
+        if "?" in uri:
+            uri = f"{uri}&key={API_KEY}"
+        else:
+            uri = f"{uri}?key={API_KEY}"
+            
+        print(f"Downloading content from: {uri}")
         r = session.get(uri, stream=True); r.raise_for_status()
-        fpath = os.path.join(outdir, os.path.basename(uri))
+        
+        # Use a hash of the URL as filename to avoid long filenames
+        import hashlib
+        url_hash = hashlib.md5(uri.encode()).hexdigest()
+        
+        # Get file extension from original URL
+        ext = os.path.splitext(uri.split("?")[0])[1] or ".bin"
+        if not ext.startswith("."):
+            ext = f".{ext}"
+            
+        fpath = os.path.join(outdir, f"tile_{url_hash}{ext}")
+        print(f"Saving to {fpath}")
         with open(fpath, "wb") as f: shutil.copyfileobj(r.raw, f)
         extract_textures(fpath, outdir)
+    
     # Recurse into children
     for child in data.get("children", []):
-        # children URIs are relative to this JSON location
-        child_url = os.path.join(os.path.dirname(url), child["content"]["uri"])
-        fetch_tileset(child_url, session, outdir)
+        if "content" in child:
+            child_uri = child["content"]["uri"]
+            # Handle both relative and absolute URLs
+            if child_uri.startswith("http"):
+                child_url = child_uri
+            else:
+                # For relative URLs, join with base URL
+                base_url = os.path.dirname(url)
+                # Add Google API domain if needed
+                if not base_url.startswith("http"):
+                    base_url = "https://tile.googleapis.com"
+                child_url = f"{base_url}/{child_uri.lstrip('/')}"
+                # Add API key to child URL
+                if "?" in child_url:
+                    child_url = f"{child_url}&key={API_KEY}"
+                else:
+                    child_url = f"{child_url}?key={API_KEY}"
+            
+            print(f"Processing child tile: {child_url}")
+            fetch_tileset(child_url, session, outdir)
+        else:
+            print(f"Warning: Child without content URI found in response, skipping")
 
 def extract_textures(tile_path, outdir):
     """Pull out all images in the GLTF chunk of a .b3dm/.glb."""
-    # strip off the 28-byte B3DM header if needed
-    with open(tile_path, "rb") as f:
-        magic = f.read(4)
-        f.seek(0)
-        if magic == b"b3dm":
-            f.seek(28)  # skip header
-        glb_data = f.read()
-    # Load GLTF in-memory
-    gltf = GLTF2.load_from_bytes(glb_data)
-    for img in gltf.images:
-        # Some GLTFs might not have URI, handle this case
-        if not hasattr(img, 'uri'):
-            print(f"Warning: Image in {tile_path} has no URI, skipping")
-            continue
-        
-        uri = img.uri
-        # Make sure the filename is safe
-        safe_name = os.path.basename(uri.split("?")[0]) if uri and not uri.startswith("data:") else f"img_{id(img)}.jpg"
-        out = os.path.join(outdir, safe_name)
-        
-        # data URI?
-        if uri and uri.startswith("data:"):
-            try:
-                header, b64 = uri.split(",", 1)
-                img_data = base64.b64decode(b64)
-                with open(out, "wb") as wf: wf.write(img_data)
-            except Exception as e:
-                print(f"Error extracting data URI image: {e}")
-        elif hasattr(img, 'bufferView') and img.bufferView is not None:
-            try:
-                # Get buffer view
-                buffer_view = gltf.bufferViews[img.bufferView]
-                # Find which buffer this view references
-                buffer_index = buffer_view.buffer
-                # Get byte offset and length
-                byte_offset = buffer_view.byteOffset
-                byte_length = buffer_view.byteLength
+    # Check file extension to handle different file types
+    _, ext = os.path.splitext(tile_path)
+    ext = ext.lower()
+    
+    # Skip processing for JSON files
+    if ext == '.json':
+        print(f"JSON file detected: {tile_path}. Processing as tileset metadata.")
+        try:
+            with open(tile_path, 'r') as f:
+                data = json.load(f)
+            
+            # If this is a tileset JSON, recursively fetch the children
+            if 'children' in data:
+                print(f"Found {len(data['children'])} children in tileset JSON")
                 
-                # Extract bytes from the correct buffer
-                img_bytes = glb_data[byte_offset:byte_offset + byte_length]
-                with open(out, "wb") as wf: wf.write(img_bytes)
-            except Exception as e:
-                print(f"Error extracting buffered image: {e}")
+                # Process each child
+                for i, child in enumerate(data['children']):
+                    if 'content' in child and 'uri' in child['content']:
+                        child_uri = child['content']['uri']
+                        # Ensure URL is absolute
+                        if not child_uri.startswith("http"):
+                            # Determine base URL from the original tile_path file
+                            with open(tile_path, 'r') as f:
+                                parent_data = json.load(f)
+                            if 'self_uri' in parent_data:
+                                # Extract base URL from self_uri
+                                base_url = os.path.dirname(parent_data['self_uri'])
+                            else:
+                                # Use default Google API base
+                                base_url = "https://tile.googleapis.com"
+                            
+                            # Build complete URL
+                            if child_uri.startswith('/'):
+                                child_url = f"{base_url}{child_uri}"
+                            else:
+                                child_url = f"{base_url}/{child_uri}"
+                        else:
+                            child_url = child_uri
+                        
+                        # Add API key to URL if needed
+                        if "?" in child_url:
+                            child_url = f"{child_url}&key={API_KEY}"
+                        else:
+                            child_url = f"{child_url}?key={API_KEY}"
+                            
+                        print(f"Downloading child content from tileset: {child_url}")
+                        try:
+                            # Create a session for the request
+                            sess = requests.Session()
+                            r = sess.get(child_url, stream=True)
+                            r.raise_for_status()
+                            
+                            # Use a hash of the URL as filename to avoid long filenames
+                            url_hash = hashlib.md5(child_url.encode()).hexdigest()
+                            
+                            # Get file extension from original URL
+                            ext = os.path.splitext(child_url.split("?")[0])[1] or ".bin"
+                            if not ext.startswith("."):
+                                ext = f".{ext}"
+                                
+                            child_path = os.path.join(outdir, f"tile_{url_hash}{ext}")
+                            print(f"Saving tileset child to {child_path}")
+                            with open(child_path, "wb") as f: 
+                                shutil.copyfileobj(r.raw, f)
+                            
+                            # Process this child file recursively
+                            extract_textures(child_path, outdir)
+                        except Exception as e:
+                            print(f"Error downloading tileset child content: {e}")
+                
+                return
+                
+            return  # Skip GLTF processing for JSON files
+        except Exception as e:
+            print(f"Error processing JSON file: {e}")
+            return
+    
+    # Skip unsupported file types
+    if ext not in ['.glb', '.b3dm', '.gltf']:
+        print(f"Unsupported file type: {ext} for file {tile_path}")
+        return
+    
+    try:
+        # strip off the 28-byte B3DM header if needed
+        with open(tile_path, "rb") as f:
+            magic = f.read(4)
+            f.seek(0)
+            if magic == b"b3dm":
+                f.seek(28)  # skip header
+            glb_data = f.read()
+            
+        # Load GLTF in-memory
+        gltf = GLTF2.load_from_bytes(glb_data)
+        for img in gltf.images:
+            # Some GLTFs might not have URI, handle this case
+            if not hasattr(img, 'uri'):
+                print(f"Warning: Image in {tile_path} has no URI, skipping")
+                continue
+            
+            uri = img.uri
+            # Make sure the filename is safe
+            safe_name = os.path.basename(uri.split("?")[0]) if uri and not uri.startswith("data:") else f"img_{id(img)}.jpg"
+            out = os.path.join(outdir, safe_name)
+            
+            # data URI?
+            if uri and uri.startswith("data:"):
+                try:
+                    header, b64 = uri.split(",", 1)
+                    img_data = base64.b64decode(b64)
+                    with open(out, "wb") as wf: wf.write(img_data)
+                except Exception as e:
+                    print(f"Error extracting data URI image: {e}")
+            elif hasattr(img, 'bufferView') and img.bufferView is not None:
+                try:
+                    # Get buffer view
+                    buffer_view = gltf.bufferViews[img.bufferView]
+                    # Find which buffer this view references
+                    buffer_index = buffer_view.buffer
+                    # Get byte offset and length
+                    byte_offset = buffer_view.byteOffset
+                    byte_length = buffer_view.byteLength
+                    
+                    # Extract bytes from the correct buffer
+                    img_bytes = glb_data[byte_offset:byte_offset + byte_length]
+                    with open(out, "wb") as wf: wf.write(img_bytes)
+                except Exception as e:
+                    print(f"Error extracting buffered image: {e}")
+    except Exception as e:
+        print(f"Error processing 3D tile file {tile_path}: {e}")
 
 def reproject_and_mosaic(src_dir, mosaic_path):
     """Take all images in src_dir, warp to EPSG:3857, and mosaic."""
@@ -284,6 +504,10 @@ def test_connection(session, url):
     try:
         resp = session.get(url)
         resp.raise_for_status()
+        # Debug: Print the API response data
+        data = resp.json()
+        print("API Response:")
+        print(json.dumps(data, indent=2)[:1000])  # Print first 1000 chars to avoid overwhelming output
         return True
     except requests.exceptions.RequestException as e:
         print(f"API Connection Error: {e}")
@@ -291,6 +515,7 @@ def test_connection(session, url):
         if "key" in url.lower():
             print("Make sure you have set a valid Google API key with 3D Tiles access")
             print("Set it with: export GOOGLE_API_KEY=your_api_key")
+            print("Note: The 3D Tiles API requires enabling the Map Tiles API in Google Cloud Console")
         return False
 
 def run_test_mode():
@@ -452,7 +677,7 @@ if __name__ == "__main__":
         print(f"Mosaic path: {MOSAIC}")
         print(f"Tiles directory: {TILEDIR}")
         
-        root_url = f"https://tile.googleapis.com/v1/3dtiles/root.json?city={CITY.replace(' ','%20')}&key={API_KEY}"
+        root_url = f"https://tile.googleapis.com/v1/3dtiles/root.json?key={API_KEY}"
         sess = requests.Session()
         
         # Test connection before proceeding
@@ -489,7 +714,7 @@ if __name__ == "__main__":
                 print("\nTo view these tiles:")
                 print(f"- Serve the folder: {TILEDIR}")
                 print(f"- Use any web server, e.g.: python -m http.server --directory {TILEDIR}")
-                print("- Open a web browser and navigate to the served URL")
+                print(f"- Open a web browser and navigate to the served URL")
             else:
                 print("\nPartial success:")
                 print(f"- Mosaic created: {MOSAIC}")
