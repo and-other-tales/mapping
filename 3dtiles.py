@@ -403,6 +403,10 @@ def extract_textures(tile_path, outdir, api_key=None):
             with open(tile_path, 'r') as f:
                 data = json.load(f)
             
+            # Log the structure of the JSON metadata for diagnostics
+            print("Inspecting JSON metadata structure:")
+            print(json.dumps(data, indent=2)[:1000])  # Print the first 1000 characters
+            
             # If this is a tileset JSON, recursively fetch the children
             if 'children' in data:
                 print(f"Found {len(data['children'])} children in tileset JSON")
@@ -451,6 +455,7 @@ def extract_textures(tile_path, outdir, api_key=None):
                         print(f"Warning: Child without content URI found in response, skipping")
             else:
                 print("No children found in tileset JSON. Ensure the tileset contains valid references.")
+                print("JSON metadata keys:", list(data.keys()))
         except Exception as e:
             print(f"Error processing JSON file: {e}")
             import traceback
