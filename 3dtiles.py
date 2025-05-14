@@ -64,17 +64,27 @@ def fetch_tileset(url, session, outdir, api_key=None):
             # Define a recursive function to handle unlimited nesting
             def process_node(node, depth=""):
                 # Process current node's content if available
-                if "content" in node:
+                if "content" in node and "uri" in node["content"]:
                     uri = node["content"]["uri"]
                     # Ensure URL is absolute
                     if not uri.startswith("http"):
                         uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
                     
                     # Check if URL already has parameters
+                    session_param = f"session={session.cookies.get('session', '')}"
                     if "?" in uri:
-                        uri = f"{uri}&key={api_key}&session={session.cookies.get('session', '')}" 
+                        # Already has parameters, just add key if needed
+                        if "key=" not in uri:
+                            uri = f"{uri}&key={api_key}"
+                        # Add session only if not already present
+                        if "session=" not in uri:
+                            uri = f"{uri}&{session_param}"
                     else:
-                        uri = f"{uri}?key={api_key}&session={session.cookies.get('session', '')}"
+                        # No parameters yet, add key and session
+                        uri = f"{uri}?key={api_key}"
+                        # Add session only if not already present
+                        if "session=" not in uri:
+                            uri = f"{uri}&{session_param}"
                         
                     print(f"{depth}Processing content: {uri}")
                     try:
@@ -106,14 +116,37 @@ def fetch_tileset(url, session, outdir, api_key=None):
                             if image_count == 0:
                                 print(f"{depth}Re-extracting textures from existing file")
                                 extract_textures(fpath, outdir)
+                    except requests.exceptions.HTTPError as e:
+                        print(f"{depth}Error downloading content: {e}")
+                        if e.response.status_code == 400:
+                            print(f"{depth}HTTP 400 Bad Request error. Possible issues:")
+                            print(f"{depth}- Invalid API key")
+                            print(f"{depth}- Incorrect URL format")
+                            print(f"{depth}- Missing required parameters")
+                            print(f"{depth}Full URL: {uri}")
+                            print(f"{depth}Check your API key and Google Cloud Console settings")
                     except Exception as e:
                         print(f"{depth}Error downloading content: {e}")
+                elif "content" in node:
+                    # Handle cases where content exists but has no URI
+                    print(f"{depth}Content found without URI in node")
+                    if "contentType" in node["content"]:
+                        print(f"{depth}Content type: {node['content']['contentType']}")
+                else:
+                    print(f"{depth}Node has no content information")
                 
                 # Process children if any
                 if "children" in node:
                     for i, child in enumerate(node["children"]):
                         print(f"{depth}Processing child {i+1}/{len(node['children'])}")
                         process_node(child, depth + "  ")
+                
+                # Special handling for "tiles" which is another way to specify children in 3D Tiles format
+                if "tiles" in node:
+                    print(f"{depth}Node has {len(node['tiles'])} tiles")
+                    for i, tile in enumerate(node['tiles']):
+                        print(f"{depth}Processing tile {i+1}/{len(node['tiles'])}")
+                        process_node(tile, depth + "  ")
             
             # Start processing from the root's children
             for i, child in enumerate(root["children"]):
@@ -235,10 +268,20 @@ def extract_textures(tile_path, outdir):
                             
                         # Add API key and session cookie to URL if needed
                         session_cookie = sess.cookies.get('session', '')
+                        session_param = f"session={session_cookie}"
                         if "?" in child_url:
-                            child_url = f"{child_url}&key={api_key}&session={session_cookie}"
+                            # Add key if not already present
+                            if "key=" not in child_url:
+                                child_url = f"{child_url}&key={api_key}"
+                            # Add session only if not already present
+                            if "session=" not in child_url:
+                                child_url = f"{child_url}&{session_param}"
                         else:
-                            child_url = f"{child_url}?key={api_key}&session={session_cookie}"
+                            # No parameters yet
+                            child_url = f"{child_url}?key={api_key}"
+                            # Add session only if not already present
+                            if "session=" not in child_url:
+                                child_url = f"{child_url}&{session_param}"
                             
                         print(f"Downloading child content from tileset: {child_url}")
                         try:
@@ -771,13 +814,47 @@ def test_connection(session, url):
             print("Skipping actual API connection test in test mode")
             return True
             
+        print(f"Testing API connection with URL: {url}")
         resp = session.get(url)
         resp.raise_for_status()
+        
         # Debug: Print the API response data
         data = resp.json()
         print("API Response:")
         print(json.dumps(data, indent=2)[:1000])  # Print first 1000 chars to avoid overwhelming output
+        
+        # Validate that the response has the expected structure
+        if "asset" not in data or "root" not in data:
+            print("Warning: API response may not be in the expected 3D Tiles format")
+            print("Please check your API key permissions and Google Cloud Console settings")
+            print("Make sure the Map Tiles API is enabled and properly configured")
+            # Still return True to let the script try to process what it received
+            
         return True
+    except requests.exceptions.HTTPError as e:
+        print(f"API Connection Error: {e}")
+        print(f"URL: {url}")
+        if e.response.status_code == 400:
+            print("\nPossible solutions for 400 Bad Request error:")
+            print("1. Check that your API key is valid and has the correct permissions")
+            print("2. Verify that the Map Tiles API is enabled in your Google Cloud Console")
+            print("3. Ensure you have billing enabled for your Google Cloud account")
+            print("4. Verify that the coordinates for the city are correct")
+            print("\nPlease fetch and review the documentation provided at:")
+            print("https://developers.google.com/maps/documentation/tile/create-renderer before continuing")
+            print("\nTo re-enable the API, visit:")
+            print("https://console.cloud.google.com/apis/library/tile.googleapis.com")
+        elif e.response.status_code == 403:
+            print("\nPossible solutions for 403 Forbidden error:")
+            print("1. Your API key may not have the correct permissions")
+            print("2. You may have exceeded your quota or have billing issues")
+            print("3. Check API restrictions (IP, referrers, etc.) in the Google Cloud Console")
+        elif e.response.status_code == 404:
+            print("\nPossible solutions for 404 Not Found error:")
+            print("1. The 3D data for this location may not be available")
+            print("2. Try a different city or adjust the coordinates")
+            print("3. Check that you're using the correct API endpoint")
+        return False
     except requests.exceptions.RequestException as e:
         print(f"API Connection Error: {e}")
         print(f"URL: {url}")
@@ -985,7 +1062,23 @@ if __name__ == "__main__":
             print("Example: export GOOGLE_API_KEY=your_actual_api_key")
             sys.exit(1)
             
-        root_url = f"https://tile.googleapis.com/v1/3dtiles/root.json?key={API_KEY}"
+        # City coordinates (approximate centers)
+        city_coordinates = {
+            "London": {"lat": 51.5074, "lng": -0.1278},
+            "New York": {"lat": 40.7128, "lng": -74.0060},
+            "Tokyo": {"lat": 35.6762, "lng": 139.6503},
+            "Paris": {"lat": 48.8566, "lng": 2.3522},
+            "Berlin": {"lat": 52.5200, "lng": 13.4050},
+            "Sydney": {"lat": -33.8688, "lng": 151.2093},
+            "San Francisco": {"lat": 37.7749, "lng": -122.4194},
+        }
+        
+        # Get coordinates for the requested city, default to London if not found
+        coords = city_coordinates.get(CITY, city_coordinates["London"])
+        print(f"Using coordinates for {CITY}: {coords}")
+        
+        # Make sure we have the right URL format for the root tileset with location targeting
+        root_url = f"https://tile.googleapis.com/v1/3dtiles/root.json?key={API_KEY}&style=satellite&lat={coords['lat']}&lng={coords['lng']}"
         sess = requests.Session()
         
         # Test connection before proceeding
