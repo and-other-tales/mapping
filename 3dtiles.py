@@ -382,7 +382,7 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None):
             print(f"{depth}Error downloading node content: {e}")
 
 def extract_textures(tile_path, outdir, api_key=None):
-    """Pull out all images in the GLTF chunk of a .b3dm/.glb."""
+    """Pull out all images in the GLTF chunk of a .b3dm/.glb or process nested JSON metadata."""
     # Use the global API_KEY if none is provided
     if api_key is None:
         api_key = API_KEY
@@ -413,88 +413,49 @@ def extract_textures(tile_path, outdir, api_key=None):
                         child_uri = child['content']['uri']
                         # Ensure URL is absolute
                         if not child_uri.startswith("http"):
-                            # Determine base URL from the original tile_path file
-                            with open(tile_path, 'r') as f:
-                                parent_data = json.load(f)
-                            if 'self_uri' in parent_data:
-                                # Extract base URL from self_uri
-                                base_url = os.path.dirname(parent_data['self_uri'])
-                            else:
-                                # Use default Google API base
-                                base_url = "https://tile.googleapis.com"
-                            
-                            # Build complete URL
-                            if child_uri.startswith('/'):
-                                child_url = f"{base_url}{child_uri}"
-                            else:
-                                child_url = f"{base_url}/{child_uri}"
+                            base_url = os.path.dirname(tile_path)
+                            child_url = f"{base_url}/{child_uri.lstrip('/')}"
                         else:
                             child_url = child_uri
                         
-                        # Create a session for the request
-                        sess = requests.Session()
-                        # Copy cookies from main session if possible
-                        try:
-                            if 'session' in globals():
-                                sess.cookies.update(session.cookies)
-                        except:
-                            pass
-                        
-                        # Use the API key passed to the function
-                        if api_key is None:
-                            api_key = API_KEY
-                            
-                        # Add API key and session cookie to URL if needed
-                        session_cookie = sess.cookies.get('session', '')
-                        session_param = f"session={session_cookie}"
+                        # Add API key if needed
                         if "?" in child_url:
-                            # Add key if not already present
                             if "key=" not in child_url:
                                 child_url = f"{child_url}&key={api_key}"
-                            # Add session only if not already present
-                            if "session=" not in child_url:
-                                child_url = f"{child_url}&{session_param}"
                         else:
-                            # No parameters yet
                             child_url = f"{child_url}?key={api_key}"
-                            # Add session only if not already present
-                            if "session=" not in child_url:
-                                child_url = f"{child_url}&{session_param}"
-                            
+                        
                         print(f"Downloading child content from tileset: {child_url}")
                         try:
-                            r = sess.get(child_url, stream=True)
+                            r = requests.get(child_url, stream=True)
                             r.raise_for_status()
                             
-                            # Use a hash of the URL as filename to avoid long filenames
+                            # Use a hash of the URL as filename
                             url_hash = hashlib.md5(child_url.encode()).hexdigest()
-                            
-                            # Get file extension from original URL
                             ext = os.path.splitext(child_url.split("?")[0])[1] or ".bin"
                             if not ext.startswith("."):
                                 ext = f".{ext}"
-                                
                             child_path = os.path.join(outdir, f"tile_{url_hash}{ext}")
                             
-                            # Check if file already exists
+                            # Save the child file
                             if not os.path.exists(child_path):
-                                print(f"Saving tileset child to {child_path}")
-                                with open(child_path, "wb") as f: 
+                                with open(child_path, "wb") as f:
                                     shutil.copyfileobj(r.raw, f)
-                            else:
-                                print(f"Tileset child file already exists: {child_path}")
+                                print(f"Saved child content to {child_path}")
                             
-                            # Process this child file recursively
+                            # Recursively process the child file
                             extract_textures(child_path, outdir, api_key=api_key)
                         except Exception as e:
-                            print(f"Error downloading tileset child content: {e}")
-                
-                return
-                
-            return  # Skip GLTF processing for JSON files
+                            print(f"Error downloading child content: {e}")
+                    else:
+                        print(f"Warning: Child without content URI found in response, skipping")
+            else:
+                print("No children found in tileset JSON. Ensure the tileset contains valid references.")
         except Exception as e:
             print(f"Error processing JSON file: {e}")
-            return
+            import traceback
+            traceback.print_exc()
+        return
     
     # Skip unsupported file types
     if ext not in ['.glb', '.b3dm', '.gltf']:
