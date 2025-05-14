@@ -413,6 +413,9 @@ def extract_textures(tile_path, outdir, api_key=None):
                 
                 # Process each child
                 for i, child in enumerate(data['children']):
+                    print(f"Inspecting child {i+1}/{len(data['children'])}:")
+                    print(json.dumps(child, indent=2)[:500])  # Log the first 500 characters of the child
+                    
                     if 'content' in child and 'uri' in child['content']:
                         child_uri = child['content']['uri']
                         # Ensure URL is absolute
@@ -452,7 +455,13 @@ def extract_textures(tile_path, outdir, api_key=None):
                         except Exception as e:
                             print(f"Error downloading child content: {e}")
                     else:
-                        print(f"Warning: Child without content URI found in response, skipping")
+                        print(f"Warning: Child without content URI found. Attempting to inspect further.")
+                        # Log additional details about the child node
+                        print(f"Child keys: {list(child.keys())}")
+                        if 'boundingVolume' in child:
+                            print(f"Bounding volume: {child['boundingVolume']}")
+                        if 'geometricError' in child:
+                            print(f"Geometric error: {child['geometricError']}")
             else:
                 print("No children found in tileset JSON. Ensure the tileset contains valid references.")
                 print("JSON metadata keys:", list(data.keys()))
