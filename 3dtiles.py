@@ -34,7 +34,7 @@ from PIL import Image
 
 # Use a default test API key if environment variable is not set
 API_KEY = os.getenv("GOOGLE_API_KEY", "")
-CITY    = "London"
+CITY    = "london"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTDIR  = "downloaded_tiles"  # Will be updated with city-specific path
 MOSAIC  = "mosaic_3857.tif"   # Will be updated with city-specific path
