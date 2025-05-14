@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
 import os
-from 3dtiles import fetch_tileset, reproject_and_mosaic, create_xyz_tiles
+from tiles_downloader import fetch_tileset, reproject_and_mosaic, create_xyz_tiles
 
 class TestIntegration(unittest.TestCase):
 

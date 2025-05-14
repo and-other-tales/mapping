@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 import json
-from 3dtiles import fetch_tileset, process_child_json, extract_textures
+from tiles_downloader import fetch_tileset, process_child_json, extract_textures
 
 class Test3DTiles(unittest.TestCase):
 
