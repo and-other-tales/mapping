@@ -620,7 +620,9 @@ def reproject_and_mosaic(src_dir, mosaic_path):
     # Check if there are any image files to process
     if not image_files:
         print(f"Warning: No image files found in {src_dir}")
-        print("No mosaic will be created.")
+        print("Ensure that the tiles were downloaded correctly and are in the expected format.")
+        print(f"Expected directory: {src_dir}")
+        print("Check if the download process completed successfully or if the directory is empty.")
         return False
     
     print(f"Found {len(image_files)} images to process")
@@ -1147,11 +1149,35 @@ if __name__ == "__main__":
             MOSAIC = os.path.join(BASE_DIR, "downloaded_tiles", f"{city_dir}_mosaic_3857.tif")
             TILEDIR = os.path.join(BASE_DIR, "tiles", city_dir)
             
-            if not os.path.exists(OUTDIR):
-                print(f"Error: Directory {OUTDIR} does not exist.")
-                print(f"Please download tiles first or create the directory.")
-                sys.exit(1)
+            if not os.path.exists(OUTDIR) or not os.listdir(OUTDIR):
+                print(f"Directory {OUTDIR} is empty or does not exist. Attempting to download tiles...")
+                if not API_KEY:
+                    print("Error: No API key provided. Set the GOOGLE_API_KEY environment variable.")
+                    sys.exit(1)
                 
+                # Use the root URL for downloading tiles
+                root_url = f"https://tile.googleapis.com/v1/3dtiles/root.json?key={API_KEY}"
+                sess = requests.Session()
+                
+                # Test connection before proceeding
+                if not test_connection(sess, root_url):
+                    print("API connection test failed. Exiting.")
+                    sys.exit(1)
+                
+                # Create output directory
+                os.makedirs(OUTDIR, exist_ok=True)
+                
+                # Download tiles
+                try:
+                    print(f"Downloading 3D tiles for {CITY}...")
+                    fetch_tileset(root_url, sess, OUTDIR, api_key=API_KEY)
+                except Exception as e:
+                    print(f"Error during tile download: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    sys.exit(1)
+            
+            # Proceed with reprojecting and creating mosaic
             try:
                 print(f"Reprojecting and creating mosaic...")
                 mosaic_success = reproject_and_mosaic(OUTDIR, MOSAIC)
@@ -1171,7 +1197,6 @@ if __name__ == "__main__":
                 else:
                     print("Failed to create mosaic. Skipping tile creation.")
                     sys.exit(1)
-                    
             except Exception as e:
                 print(f"Error during processing: {e}")
                 import traceback
