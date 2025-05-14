@@ -57,77 +57,64 @@ def fetch_tileset(url, session, outdir):
         # Process the nested structure of Google's 3D Tiles API
         if "children" in root:
             print(f"Root has {len(root['children'])} children")
+            # Define a recursive function to handle unlimited nesting
+            def process_node(node, depth=""):
+                # Process current node's content if available
+                if "content" in node:
+                    uri = node["content"]["uri"]
+                    # Ensure URL is absolute
+                    if not uri.startswith("http"):
+                        uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
+                    
+                    # Check if URL already has parameters
+                    if "?" in uri:
+                        uri = f"{uri}&key={API_KEY}&session={session.cookies.get('session', '')}" 
+                    else:
+                        uri = f"{uri}?key={API_KEY}&session={session.cookies.get('session', '')}"
+                        
+                    print(f"{depth}Processing content: {uri}")
+                    try:
+                        r = session.get(uri, stream=True)
+                        r.raise_for_status()
+                        
+                        # Use a hash of the URL as filename to avoid long filenames
+                        import hashlib
+                        url_hash = hashlib.md5(uri.encode()).hexdigest()
+                        
+                        # Get file extension from original URL
+                        ext = os.path.splitext(uri.split("?")[0])[1] or ".bin"
+                        if not ext.startswith("."):
+                            ext = f".{ext}"
+                            
+                        fpath = os.path.join(outdir, f"tile_{url_hash}{ext}")
+                        
+                        # Check if file already exists
+                        if not os.path.exists(fpath):
+                            print(f"{depth}Saving to {fpath}")
+                            with open(fpath, "wb") as f: shutil.copyfileobj(r.raw, f)
+                            print(f"{depth}Extracting textures from {fpath}")
+                            extract_textures(fpath, outdir)
+                        else:
+                            print(f"{depth}File already exists: {fpath}")
+                            # Still try to extract textures if no images have been found yet
+                            image_count = len([f for f in os.listdir(outdir) 
+                                               if f.lower().endswith((".png", ".jpg", ".jpeg"))])
+                            if image_count == 0:
+                                print(f"{depth}Re-extracting textures from existing file")
+                                extract_textures(fpath, outdir)
+                    except Exception as e:
+                        print(f"{depth}Error downloading content: {e}")
+                
+                # Process children if any
+                if "children" in node:
+                    for i, child in enumerate(node["children"]):
+                        print(f"{depth}Processing child {i+1}/{len(node['children'])}")
+                        process_node(child, depth + "  ")
+            
+            # Start processing from the root's children
             for i, child in enumerate(root["children"]):
                 print(f"Processing root child {i+1}/{len(root['children'])}")
-                
-                # Check if this child has its own children
-                if "children" in child:
-                    print(f"Child {i+1} has {len(child['children'])} nested children")
-                    for j, nested_child in enumerate(child["children"]):
-                        print(f"Processing nested child {j+1}/{len(child['children'])}")
-                        
-                        # Process the nested child
-                        if "content" in nested_child:
-                            uri = nested_child["content"]["uri"]
-                            # Ensure URL is absolute
-                            if not uri.startswith("http"):
-                                uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
-                            
-                            # Check if URL already has parameters
-                            if "?" in uri:
-                                uri = f"{uri}&key={API_KEY}"
-                            else:
-                                uri = f"{uri}?key={API_KEY}"
-                                
-                            print(f"Found content in nested child: {uri}")
-                            r = session.get(uri, stream=True)
-                            r.raise_for_status()
-                            
-                            # Use a hash of the URL as filename to avoid long filenames
-                            import hashlib
-                            url_hash = hashlib.md5(uri.encode()).hexdigest()
-                            
-                            # Get file extension from original URL
-                            ext = os.path.splitext(uri.split("?")[0])[1] or ".bin"
-                            if not ext.startswith("."):
-                                ext = f".{ext}"
-                                
-                            fpath = os.path.join(outdir, f"tile_{url_hash}{ext}")
-                            print(f"Saving to {fpath}")
-                            with open(fpath, "wb") as f: shutil.copyfileobj(r.raw, f)
-                            extract_textures(fpath, outdir)
-                        
-                        # Continue deeper if there are more children
-                        if "children" in nested_child:
-                            for k, deep_child in enumerate(nested_child["children"]):
-                                if "content" in deep_child:
-                                    uri = deep_child["content"]["uri"]
-                                    if not uri.startswith("http"):
-                                        uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
-                                    
-                                    # Check if URL already has parameters
-                                    if "?" in uri:
-                                        uri = f"{uri}&key={API_KEY}"
-                                    else:
-                                        uri = f"{uri}?key={API_KEY}"
-                                        
-                                    print(f"Found content in deep child: {uri}")
-                                    r = session.get(uri, stream=True)
-                                    r.raise_for_status()
-                                    
-                                    # Use a hash of the URL as filename to avoid long filenames
-                                    import hashlib
-                                    url_hash = hashlib.md5(uri.encode()).hexdigest()
-                                    
-                                    # Get file extension from original URL
-                                    ext = os.path.splitext(uri.split("?")[0])[1] or ".bin"
-                                    if not ext.startswith("."):
-                                        ext = f".{ext}"
-                                        
-                                    fpath = os.path.join(outdir, f"tile_{url_hash}{ext}")
-                                    print(f"Saving to {fpath}")
-                                    with open(fpath, "wb") as f: shutil.copyfileobj(r.raw, f)
-                                    extract_textures(fpath, outdir)
+                process_node(child, "  ")
         
         # Continue with the standard processing
         data = root  # Update data reference to use the root element
@@ -228,16 +215,24 @@ def extract_textures(tile_path, outdir):
                         else:
                             child_url = child_uri
                         
-                        # Add API key to URL if needed
+                        # Create a session for the request
+                        sess = requests.Session()
+                        # Copy cookies from main session if possible
+                        try:
+                            if 'session' in globals():
+                                sess.cookies.update(session.cookies)
+                        except:
+                            pass
+                            
+                        # Add API key and session cookie to URL if needed
+                        session_cookie = sess.cookies.get('session', '')
                         if "?" in child_url:
-                            child_url = f"{child_url}&key={API_KEY}"
+                            child_url = f"{child_url}&key={API_KEY}&session={session_cookie}"
                         else:
-                            child_url = f"{child_url}?key={API_KEY}"
+                            child_url = f"{child_url}?key={API_KEY}&session={session_cookie}"
                             
                         print(f"Downloading child content from tileset: {child_url}")
                         try:
-                            # Create a session for the request
-                            sess = requests.Session()
                             r = sess.get(child_url, stream=True)
                             r.raise_for_status()
                             
@@ -250,9 +245,14 @@ def extract_textures(tile_path, outdir):
                                 ext = f".{ext}"
                                 
                             child_path = os.path.join(outdir, f"tile_{url_hash}{ext}")
-                            print(f"Saving tileset child to {child_path}")
-                            with open(child_path, "wb") as f: 
-                                shutil.copyfileobj(r.raw, f)
+                            
+                            # Check if file already exists
+                            if not os.path.exists(child_path):
+                                print(f"Saving tileset child to {child_path}")
+                                with open(child_path, "wb") as f: 
+                                    shutil.copyfileobj(r.raw, f)
+                            else:
+                                print(f"Tileset child file already exists: {child_path}")
                             
                             # Process this child file recursively
                             extract_textures(child_path, outdir)
@@ -272,52 +272,112 @@ def extract_textures(tile_path, outdir):
         return
     
     try:
+        print(f"Extracting textures from {ext} file: {tile_path}")
         # strip off the 28-byte B3DM header if needed
         with open(tile_path, "rb") as f:
             magic = f.read(4)
             f.seek(0)
             if magic == b"b3dm":
+                print("Detected b3dm format, skipping 28-byte header")
                 f.seek(28)  # skip header
             glb_data = f.read()
+        
+        # Ensure we have enough data to process
+        if len(glb_data) < 100:
+            print(f"Warning: File {tile_path} is too small ({len(glb_data)} bytes), may not be a valid GLB/GLTF file")
+            return
             
-        # Load GLTF in-memory
-        gltf = GLTF2.load_from_bytes(glb_data)
-        for img in gltf.images:
-            # Some GLTFs might not have URI, handle this case
-            if not hasattr(img, 'uri'):
-                print(f"Warning: Image in {tile_path} has no URI, skipping")
-                continue
+        try:
+            # Load GLTF in-memory
+            print(f"Loading GLTF data from file size {len(glb_data)} bytes")
+            gltf = GLTF2.load_from_bytes(glb_data)
             
-            uri = img.uri
-            # Make sure the filename is safe
-            safe_name = os.path.basename(uri.split("?")[0]) if uri and not uri.startswith("data:") else f"img_{id(img)}.jpg"
-            out = os.path.join(outdir, safe_name)
+            # Check if there are any images
+            if not hasattr(gltf, 'images') or not gltf.images:
+                print(f"No images found in {tile_path}")
+                return
+                
+            print(f"Found {len(gltf.images)} images in {tile_path}")
             
-            # data URI?
-            if uri and uri.startswith("data:"):
-                try:
-                    header, b64 = uri.split(",", 1)
-                    img_data = base64.b64decode(b64)
-                    with open(out, "wb") as wf: wf.write(img_data)
-                except Exception as e:
-                    print(f"Error extracting data URI image: {e}")
-            elif hasattr(img, 'bufferView') and img.bufferView is not None:
-                try:
-                    # Get buffer view
-                    buffer_view = gltf.bufferViews[img.bufferView]
-                    # Find which buffer this view references
-                    buffer_index = buffer_view.buffer
-                    # Get byte offset and length
-                    byte_offset = buffer_view.byteOffset
-                    byte_length = buffer_view.byteLength
+            for idx, img in enumerate(gltf.images):
+                print(f"Processing image {idx+1}/{len(gltf.images)}")
+                # Handle images with bufferView reference
+                if hasattr(img, 'bufferView') and img.bufferView is not None:
+                    try:
+                        # Ensure we have bufferViews
+                        if not hasattr(gltf, 'bufferViews') or img.bufferView >= len(gltf.bufferViews):
+                            print(f"Warning: Invalid bufferView index {img.bufferView} for image in {tile_path}")
+                            continue
+                            
+                        # Get buffer view
+                        buffer_view = gltf.bufferViews[img.bufferView]
+                        # Find which buffer this view references
+                        buffer_index = buffer_view.buffer
+                        
+                        # Ensure the buffer index is valid
+                        if not hasattr(gltf, 'buffers') or buffer_index >= len(gltf.buffers):
+                            print(f"Warning: Invalid buffer index {buffer_index} for image in {tile_path}")
+                            continue
+                            
+                        # Get byte offset and length
+                        byte_offset = buffer_view.byteOffset or 0
+                        byte_length = buffer_view.byteLength
+                        
+                        # Determine image format & extension from MIME type if available
+                        ext = ".jpg"  # Default extension
+                        if hasattr(img, 'mimeType'):
+                            if img.mimeType == "image/jpeg":
+                                ext = ".jpg"
+                            elif img.mimeType == "image/png":
+                                ext = ".png"
+                        
+                        img_filename = f"image_{idx}_{buffer_index}_{byte_offset}{ext}"
+                        out = os.path.join(outdir, img_filename)
+                        
+                        print(f"Extracting image to {out} (offset={byte_offset}, length={byte_length})")
+                        if len(glb_data) < byte_offset + byte_length:
+                            print(f"Warning: Buffer overflow - file size {len(glb_data)}, but need offset {byte_offset} + length {byte_length}")
+                            continue
+                            
+                        # Extract bytes from the buffer
+                        img_bytes = glb_data[byte_offset:byte_offset + byte_length]
+                        with open(out, "wb") as wf: wf.write(img_bytes)
+                        print(f"Successfully extracted {len(img_bytes)} bytes to {out}")
+                    except Exception as e:
+                        print(f"Error extracting buffered image: {e}")
+                        import traceback
+                        traceback.print_exc()
+                # Handle images with URI - could be external or data URI
+                elif hasattr(img, 'uri') and img.uri:
+                    uri = img.uri
+                    # Make sure the filename is safe
+                    safe_name = os.path.basename(uri.split("?")[0]) if uri and not uri.startswith("data:") else f"img_{idx}.jpg"
+                    out = os.path.join(outdir, safe_name)
                     
-                    # Extract bytes from the correct buffer
-                    img_bytes = glb_data[byte_offset:byte_offset + byte_length]
-                    with open(out, "wb") as wf: wf.write(img_bytes)
-                except Exception as e:
-                    print(f"Error extracting buffered image: {e}")
+                    # Data URI?
+                    if uri.startswith("data:"):
+                        try:
+                            print(f"Extracting data URI image to {out}")
+                            header, b64 = uri.split(",", 1)
+                            img_data = base64.b64decode(b64)
+                            with open(out, "wb") as wf: wf.write(img_data)
+                            print(f"Successfully extracted {len(img_data)} bytes from data URI")
+                        except Exception as e:
+                            print(f"Error extracting data URI image: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        print(f"External URI reference found: {uri}")
+                else:
+                    print(f"Warning: Image in {tile_path} has no URI or bufferView, skipping")
+        except Exception as e:
+            print(f"Error parsing GLTF data: {e}")
+            import traceback
+            traceback.print_exc()
     except Exception as e:
         print(f"Error processing 3D tile file {tile_path}: {e}")
+        import traceback
+        traceback.print_exc()
 
 def reproject_and_mosaic(src_dir, mosaic_path):
     """Take all images in src_dir, warp to EPSG:3857, and mosaic."""
@@ -444,10 +504,82 @@ def create_xyz_tiles(mosaic, tile_folder):
         gdal2tiles_path = shutil.which("gdal2tiles.py")
         
         if not gdal2tiles_path:
-            # Try common alternative paths or use Python module
+            # Try common alternative paths
             print("gdal2tiles.py not found in PATH, trying alternatives...")
             
-            # Create a very minimal tile viewer HTML file
+            # Try to use Python's gdal module directly
+            try:
+                print("Attempting to use Python GDAL module...")
+                from osgeo import gdal
+                from osgeo_utils import gdal2tiles
+                
+                # Create a wrapper function to call gdal2tiles
+                def run_gdal2tiles():
+                    print(f"Using GDAL Python module to create tiles from {mosaic}")
+                    # Parameters similar to command line
+                    gdal2tiles_args = [
+                        "",  # Program name (unused)
+                        "-z", "6-18",
+                        mosaic,
+                        tile_folder
+                    ]
+                    gdal2tiles.main(gdal2tiles_args)
+                    return True
+                    
+                # Run the function
+                success = run_gdal2tiles()
+                
+                if success:
+                    # Create an HTML viewer
+                    html_file = os.path.join(tile_folder, "index.html")
+                    with open(html_file, "w") as f:
+                        f.write("""<!DOCTYPE html>
+<html>
+<head>
+    <title>3D Tiles Viewer</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <script>
+        var map = L.map('map').setView([0, 0], 2);
+        
+        L.tileLayer('http://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors',
+            maxZoom: 18,
+        }).addTo(map);
+        
+        // Add our generated XYZ tiles
+        L.tileLayer('./{z}/{x}/{y}.png', {
+            attribution: '3D Tiles',
+            maxZoom: 18,
+            tms: true
+        }).addTo(map);
+        
+        // Try to fit the map to bounds if we know them
+        // You can modify these bounds to focus on your area of interest
+        try {
+            var bounds = [[40.712, -74.227], [40.774, -74.125]]; // Example: NYC
+            map.fitBounds(bounds);
+        } catch(e) {
+            console.error("Could not set bounds:", e);
+        }
+    </script>
+</body>
+</html>""")
+                    print(f"Created viewer HTML at {html_file}")
+                    return True
+            except Exception as gdal_module_error:
+                print(f"Could not use GDAL Python module: {gdal_module_error}")
+                
+            # Create a very minimal tile viewer HTML file as fallback
             html_file = os.path.join(tile_folder, "index.html")
             with open(html_file, "w") as f:
                 f.write("""<!DOCTYPE html>
@@ -485,6 +617,52 @@ def create_xyz_tiles(mosaic, tile_folder):
                                 stderr=subprocess.PIPE,
                                 text=True)
         print(result.stdout)
+        
+        # Create an HTML viewer for the tiles
+        html_file = os.path.join(tile_folder, "index.html")
+        with open(html_file, "w") as f:
+            f.write("""<!DOCTYPE html>
+<html>
+<head>
+    <title>3D Tiles Viewer</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <script>
+        var map = L.map('map').setView([0, 0], 2);
+        
+        L.tileLayer('http://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors',
+            maxZoom: 18,
+        }).addTo(map);
+        
+        // Add our generated XYZ tiles
+        L.tileLayer('./{z}/{x}/{y}.png', {
+            attribution: '3D Tiles',
+            maxZoom: 18,
+            tms: true
+        }).addTo(map);
+        
+        // Try to fit the map to bounds if we know them
+        // You can modify these bounds to focus on your area of interest
+        try {
+            var bounds = [[51.4, -0.2], [51.6, 0.1]]; // London approximate bounds
+            map.fitBounds(bounds);
+        } catch(e) {
+            console.error("Could not set bounds:", e);
+        }
+    </script>
+</body>
+</html>""")
+        print(f"Created viewer HTML at {html_file}")
         return True
     except subprocess.CalledProcessError as e:
         print(f"Error running gdal2tiles.py: {e}")
