@@ -107,7 +107,7 @@ def fetch_tileset(url, session, outdir, api_key=None):
                             print(f"{depth}Saving to {fpath}")
                             with open(fpath, "wb") as f: shutil.copyfileobj(r.raw, f)
                             print(f"{depth}Extracting textures from {fpath}")
-                            extract_textures(fpath, outdir)
+                            extract_textures(fpath, outdir, api_key=api_key)
                         else:
                             print(f"{depth}File already exists: {fpath}")
                             # Still try to extract textures if no images have been found yet
@@ -115,7 +115,7 @@ def fetch_tileset(url, session, outdir, api_key=None):
                                                if f.lower().endswith((".png", ".jpg", ".jpeg"))])
                             if image_count == 0:
                                 print(f"{depth}Re-extracting textures from existing file")
-                                extract_textures(fpath, outdir)
+                                extract_textures(fpath, outdir, api_key=api_key)
                     except requests.exceptions.HTTPError as e:
                         print(f"{depth}Error downloading content: {e}")
                         if e.response.status_code == 400:
@@ -184,7 +184,7 @@ def fetch_tileset(url, session, outdir, api_key=None):
         fpath = os.path.join(outdir, f"tile_{url_hash}{ext}")
         print(f"Saving to {fpath}")
         with open(fpath, "wb") as f: shutil.copyfileobj(r.raw, f)
-        extract_textures(fpath, outdir)
+        extract_textures(fpath, outdir, api_key=api_key)
     
     # Process the root node itself
     if "root" in data:
@@ -274,7 +274,7 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None):
                         if ext.lower() in ['.glb', '.b3dm']:
                             # Process GLB/B3DM files for textures
                             print(f"{depth}Extracting textures from GLB/B3DM file")
-                            extract_textures(fpath, outdir)
+                            extract_textures(fpath, outdir, api_key=api_key)
                         elif ext.lower() == '.json':
                             # Process JSON files recursively
                             print(f"{depth}Processing JSON file recursively")
@@ -289,7 +289,7 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None):
                         # Still try to process file based on extension
                         if ext.lower() in ['.glb', '.b3dm']:
                             print(f"{depth}Re-extracting textures from existing GLB/B3DM file")
-                            extract_textures(fpath, outdir)
+                            extract_textures(fpath, outdir, api_key=api_key)
                         elif ext.lower() == '.json':
                             # Process JSON files recursively
                             print(f"{depth}Re-processing existing JSON file")
@@ -353,7 +353,7 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None):
                 if ext.lower() in ['.glb', '.b3dm']:
                     # Process GLB/B3DM files for textures
                     print(f"{depth}Extracting textures from GLB/B3DM file")
-                    extract_textures(fpath, outdir)
+                    extract_textures(fpath, outdir, api_key=api_key)
                 elif ext.lower() == '.json':
                     # Process JSON files recursively
                     print(f"{depth}Processing JSON file recursively")
@@ -368,7 +368,7 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None):
                 # Still try to process file based on extension
                 if ext.lower() in ['.glb', '.b3dm']:
                     print(f"{depth}Re-extracting textures from existing GLB/B3DM file")
-                    extract_textures(fpath, outdir)
+                    extract_textures(fpath, outdir, api_key=api_key)
                 elif ext.lower() == '.json':
                     # Process JSON files recursively
                     print(f"{depth}Re-processing existing JSON file")
@@ -381,8 +381,12 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None):
         except Exception as e:
             print(f"{depth}Error downloading node content: {e}")
 
-def extract_textures(tile_path, outdir):
+def extract_textures(tile_path, outdir, api_key=None):
     """Pull out all images in the GLTF chunk of a .b3dm/.glb."""
+    # Use the global API_KEY if none is provided
+    if api_key is None:
+        api_key = API_KEY
+        
     # Check if the file exists before attempting to process it
     if not os.path.exists(tile_path):
         print(f"Warning: File {tile_path} does not exist")
@@ -435,6 +439,10 @@ def extract_textures(tile_path, outdir):
                                 sess.cookies.update(session.cookies)
                         except:
                             pass
+                        
+                        # Use the API key passed to the function
+                        if api_key is None:
+                            api_key = API_KEY
                             
                         # Add API key and session cookie to URL if needed
                         session_cookie = sess.cookies.get('session', '')
@@ -477,7 +485,7 @@ def extract_textures(tile_path, outdir):
                                 print(f"Tileset child file already exists: {child_path}")
                             
                             # Process this child file recursively
-                            extract_textures(child_path, outdir)
+                            extract_textures(child_path, outdir, api_key=api_key)
                         except Exception as e:
                             print(f"Error downloading tileset child content: {e}")
                 
