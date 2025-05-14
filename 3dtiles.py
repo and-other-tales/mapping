@@ -186,7 +186,12 @@ def fetch_tileset(url, session, outdir, api_key=None):
         with open(fpath, "wb") as f: shutil.copyfileobj(r.raw, f)
         extract_textures(fpath, outdir)
     
-    # Recurse into children
+    # Process the root node itself
+    if "root" in data:
+        print(f"Processing root node with {len(data['root'].get('children', []))} children")
+        process_child_json(data["root"], session, outdir, depth="  ", api_key=api_key)
+    
+    # Also process any direct children in the data
     for child in data.get("children", []):
         if "content" in child:
             child_uri = child["content"]["uri"]
@@ -210,6 +215,171 @@ def fetch_tileset(url, session, outdir, api_key=None):
             fetch_tileset(child_url, session, outdir, api_key=api_key)
         else:
             print(f"Warning: Child without content URI found in response, skipping")
+
+def process_child_json(json_data, session, outdir, depth="", api_key=None):
+    """Process a JSON file to extract and download content URIs."""
+    if api_key is None:
+        api_key = API_KEY
+    
+    # Try to get the session cookie from the session
+    session_cookie = ""
+    if hasattr(session, 'cookies'):
+        session_cookie = session.cookies.get('session', '')
+    
+    # Handle children recursively
+    if "children" in json_data:
+        for i, child in enumerate(json_data["children"]):
+            print(f"{depth}Processing child {i+1}/{len(json_data['children'])}")
+            
+            # Process content if available
+            if "content" in child and "uri" in child["content"]:
+                uri = child["content"]["uri"]
+                # Ensure URL is absolute
+                if not uri.startswith("http"):
+                    uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
+                
+                # Add API key and session
+                if "?" in uri:
+                    uri = f"{uri}&key={api_key}"
+                    if session_cookie and "session=" not in uri:
+                        uri = f"{uri}&session={session_cookie}"
+                else:
+                    uri = f"{uri}?key={api_key}"
+                    if session_cookie:
+                        uri = f"{uri}&session={session_cookie}"
+                
+                # Download content
+                print(f"{depth}Downloading child content: {uri}")
+                try:
+                    r = session.get(uri, stream=True)
+                    r.raise_for_status()
+                    
+                    # Use hash of URL as filename
+                    import hashlib
+                    url_hash = hashlib.md5(uri.encode()).hexdigest()
+                    
+                    # Get file extension
+                    ext = os.path.splitext(uri.split("?")[0])[1] or ".bin"
+                    if not ext.startswith("."):
+                        ext = f".{ext}"
+                    
+                    fpath = os.path.join(outdir, f"tile_{url_hash}{ext}")
+                    print(f"{depth}Saving to {fpath}")
+                    
+                    if not os.path.exists(fpath):
+                        with open(fpath, "wb") as f:
+                            shutil.copyfileobj(r.raw, f)
+                        
+                        # Handle file based on extension
+                        if ext.lower() in ['.glb', '.b3dm']:
+                            # Process GLB/B3DM files for textures
+                            print(f"{depth}Extracting textures from GLB/B3DM file")
+                            extract_textures(fpath, outdir)
+                        elif ext.lower() == '.json':
+                            # Process JSON files recursively
+                            print(f"{depth}Processing JSON file recursively")
+                            try:
+                                with open(fpath, 'r') as f:
+                                    child_json = json.load(f)
+                                process_child_json(child_json, session, outdir, depth + "  ", api_key)
+                            except Exception as e:
+                                print(f"{depth}Error processing JSON file: {e}")
+                    else:
+                        print(f"{depth}File already exists: {fpath}")
+                        # Still try to process file based on extension
+                        if ext.lower() in ['.glb', '.b3dm']:
+                            print(f"{depth}Re-extracting textures from existing GLB/B3DM file")
+                            extract_textures(fpath, outdir)
+                        elif ext.lower() == '.json':
+                            # Process JSON files recursively
+                            print(f"{depth}Re-processing existing JSON file")
+                            try:
+                                with open(fpath, 'r') as f:
+                                    child_json = json.load(f)
+                                process_child_json(child_json, session, outdir, depth + "  ", api_key)
+                            except Exception as e:
+                                print(f"{depth}Error processing JSON file: {e}")
+                except Exception as e:
+                    print(f"{depth}Error downloading content: {e}")
+            
+            # Recurse into this child's children
+            if "children" in child:
+                process_child_json(child, session, outdir, depth + "  ", api_key)
+    
+    # Print a warning if there are no children or content to process
+    if "children" not in json_data and ("content" not in json_data or "uri" not in json_data.get("content", {})):
+        print(f"{depth}Warning: No children or content URI found in this node")
+
+    # If this node has content, process it too
+    if "content" in json_data and "uri" in json_data["content"]:
+        uri = json_data["content"]["uri"]
+        # Ensure URL is absolute
+        if not uri.startswith("http"):
+            uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
+        
+        # Add API key and session
+        if "?" in uri:
+            uri = f"{uri}&key={api_key}"
+            if session_cookie and "session=" not in uri:
+                uri = f"{uri}&session={session_cookie}"
+        else:
+            uri = f"{uri}?key={api_key}"
+            if session_cookie:
+                uri = f"{uri}&session={session_cookie}"
+        
+        # Download content
+        print(f"{depth}Downloading node content: {uri}")
+        try:
+            r = session.get(uri, stream=True)
+            r.raise_for_status()
+            
+            # Use hash of URL as filename
+            import hashlib
+            url_hash = hashlib.md5(uri.encode()).hexdigest()
+            
+            # Get file extension
+            ext = os.path.splitext(uri.split("?")[0])[1] or ".bin"
+            if not ext.startswith("."):
+                ext = f".{ext}"
+            
+            fpath = os.path.join(outdir, f"tile_{url_hash}{ext}")
+            print(f"{depth}Saving node content to {fpath}")
+            
+            if not os.path.exists(fpath):
+                with open(fpath, "wb") as f:
+                    shutil.copyfileobj(r.raw, f)
+                
+                # Handle file based on extension
+                if ext.lower() in ['.glb', '.b3dm']:
+                    # Process GLB/B3DM files for textures
+                    print(f"{depth}Extracting textures from GLB/B3DM file")
+                    extract_textures(fpath, outdir)
+                elif ext.lower() == '.json':
+                    # Process JSON files recursively
+                    print(f"{depth}Processing JSON file recursively")
+                    try:
+                        with open(fpath, 'r') as f:
+                            node_json = json.load(f)
+                        process_child_json(node_json, session, outdir, depth + "  ", api_key)
+                    except Exception as e:
+                        print(f"{depth}Error processing JSON file: {e}")
+            else:
+                print(f"{depth}Node content file already exists: {fpath}")
+                # Still try to process file based on extension
+                if ext.lower() in ['.glb', '.b3dm']:
+                    print(f"{depth}Re-extracting textures from existing GLB/B3DM file")
+                    extract_textures(fpath, outdir)
+                elif ext.lower() == '.json':
+                    # Process JSON files recursively
+                    print(f"{depth}Re-processing existing JSON file")
+                    try:
+                        with open(fpath, 'r') as f:
+                            node_json = json.load(f)
+                        process_child_json(node_json, session, outdir, depth + "  ", api_key)
+                    except Exception as e:
+                        print(f"{depth}Error processing JSON file: {e}")
+        except Exception as e:
+            print(f"{depth}Error downloading node content: {e}")
 
 def extract_textures(tile_path, outdir):
     """Pull out all images in the GLTF chunk of a .b3dm/.glb."""
@@ -1077,8 +1247,9 @@ if __name__ == "__main__":
         coords = city_coordinates.get(CITY, city_coordinates["London"])
         print(f"Using coordinates for {CITY}: {coords}")
         
-        # Make sure we have the right URL format for the root tileset with location targeting
-        root_url = f"https://tile.googleapis.com/v1/3dtiles/root.json?key={API_KEY}&style=satellite&lat={coords['lat']}&lng={coords['lng']}"
+        # Use the simplest API format as specified in the documentation
+        # The lat/lng parameters are not needed for the root request
+        root_url = f"https://tile.googleapis.com/v1/3dtiles/root.json?key={API_KEY}"
         sess = requests.Session()
         
         # Test connection before proceeding
