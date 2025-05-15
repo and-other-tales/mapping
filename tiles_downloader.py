@@ -31,6 +31,8 @@ from rasterio.io import MemoryFile
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 import numpy as np
 from PIL import Image
+import subprocess
+from rasterio.transform import from_bounds
 
 # Use a default test API key if environment variable is not set
 API_KEY = os.getenv("GOOGLE_API_KEY", "")
@@ -57,48 +59,28 @@ def fetch_tileset(url, session, outdir, api_key=None, session_param=None):
         qs = parse_qs(parsed.query)
         session_param = qs.get('session', [None])[0]
 
-    # Find the session param in the root tileset response if present
+    # Recursively process the root node
     if "root" in data:
-        root = data["root"]
-        # Google API: children URIs may have ?session=... in them
-        if "children" in root:
-            for child in root["children"]:
-                if "content" in child and "uri" in child["content"]:
-                    uri = child["content"]["uri"]
-                    # If the URI is relative, make it absolute
-                    if not uri.startswith("http"):
-                        uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
-                    # If session param is present in the URI, extract it
-                    from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
-                    parsed = urlparse(uri)
-                    qs = parse_qs(parsed.query)
-                    if 'session' in qs:
-                        session_param = qs['session'][0]
-                    # Always append key and session
-                    new_qs = dict(qs)
-                    new_qs['key'] = [api_key]
-                    if session_param:
-                        new_qs['session'] = [session_param]
-                    uri = parsed._replace(query=urlencode(new_qs, doseq=True)).geturl()
-                    child["content"]["uri"] = uri
-
-    # Process children recursively
-    process_child_json(data, session, outdir, api_key=api_key, session_param=session_param)
+        process_child_json(data["root"], session, outdir, api_key=api_key, session_param=session_param)
+    else:
+        process_child_json(data, session, outdir, api_key=api_key, session_param=session_param)
 
 def process_child_json(json_data, session, outdir, depth="", api_key=None, session_param=None):
-    """Process a JSON file to extract and download content URIs recursively."""
+    """Process a JSON file to extract and download content URIs recursively, always appending correct key and session params."""
     if api_key is None:
         api_key = API_KEY
 
     from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 
-    def append_parameters(uri):
+    def append_parameters(uri, api_key, session_param):
         parsed = urlparse(uri)
         qs = parse_qs(parsed.query)
         qs['key'] = [api_key]
         if session_param:
             qs['session'] = [session_param]
-        return parsed._replace(query=urlencode(qs, doseq=True)).geturl()
+        # Remove duplicate keys
+        new_query = urlencode(qs, doseq=True)
+        return parsed._replace(query=new_query).geturl()
 
     # Recursively process children
     if "children" in json_data:
@@ -111,7 +93,8 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None, sessi
         # If the URI is relative, make it absolute
         if not uri.startswith("http"):
             uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
-        uri = append_parameters(uri)
+        # Always append/replace key and session
+        uri = append_parameters(uri, api_key, session_param)
         ext = os.path.splitext(uri.split("?")[0])[1].lower()
         import hashlib
         url_hash = hashlib.md5(uri.encode()).hexdigest()
@@ -127,7 +110,11 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None, sessi
                     shutil.copyfileobj(r.raw, f)
             with open(fpath, "r") as f:
                 child_json = json.load(f)
-            process_child_json(child_json, session, outdir, depth + "  ", api_key, session_param)
+            # Extract session param from this URI if present
+            parsed = urlparse(uri)
+            qs = parse_qs(parsed.query)
+            child_session = qs.get('session', [session_param])[0]
+            process_child_json(child_json, session, outdir, depth + "  ", api_key, child_session)
         elif ext in [".glb", ".b3dm"]:
             # Download and process the tile
             if not os.path.exists(fpath):
@@ -141,168 +128,65 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None, sessi
 
 def extract_textures(tile_path, outdir, api_key=None):
     """Pull out all images in the GLTF chunk of a .b3dm/.glb or process nested JSON metadata."""
-    # Use the global API_KEY if none is provided
     if api_key is None:
         api_key = API_KEY
-        
-    # Check if the file exists before attempting to process it
     if not os.path.exists(tile_path):
         print(f"Warning: File {tile_path} does not exist")
         return
-        
-    # Check file extension to handle different file types
     _, ext = os.path.splitext(tile_path)
     ext = ext.lower()
-    
-    # Skip processing for JSON files
-    if ext == '.json':
-        print(f"JSON file detected: {tile_path}. Processing as tileset metadata.")
-        try:
-            with open(tile_path, 'r') as f:
-                data = json.load(f)
-            
-            # Log the structure of the JSON metadata for diagnostics
-            print("Inspecting JSON metadata structure:")
-            print(json.dumps(data, indent=2)[:1000])  # Print the first 1000 characters
-            
-            # If this is a tileset JSON, recursively fetch the children
-            if 'children' in data:
-                print(f"Found {len(data['children'])} children in tileset JSON")
-                
-                # Process each child
-                for i, child in enumerate(data['children']):
-                    print(f"Inspecting child {i+1}/{len(data['children'])}:")
-                    print(json.dumps(child, indent=2)[:500])  # Log the first 500 characters of the child
-                    
-                    if 'content' in child and 'uri' in child['content']:
-                        child_uri = child['content']['uri']
-                        # Ensure URL is absolute
-                        if not child_uri.startswith("http"):
-                            base_url = os.path.dirname(tile_path)
-                            child_url = f"{base_url}/{child_uri.lstrip('/')}"
-                        else:
-                            child_url = child_uri
-                        
-                        # Add API key if needed
-                        if "?" in child_url:
-                            if "key=" not in child_url:
-                                child_url = f"{child_url}&key={api_key}"
-                        else:
-                            child_url = f"{child_url}?key={api_key}"
-                        
-                        print(f"Downloading child content from tileset: {child_url}")
-                        try:
-                            r = requests.get(child_url, stream=True)
-                            r.raise_for_status()
-                            
-                            # Use a hash of the URL as filename
-                            url_hash = hashlib.md5(child_url.encode()).hexdigest()
-                            ext = os.path.splitext(child_url.split("?")[0])[1] or ".bin"
-                            if not ext.startswith("."):
-                                ext = f".{ext}"
-                            child_path = os.path.join(outdir, f"tile_{url_hash}{ext}")
-                            
-                            # Save the child file
-                            if not os.path.exists(child_path):
-                                with open(child_path, "wb") as f:
-                                    shutil.copyfileobj(r.raw, f)
-                                print(f"Saved child content to {child_path}")
-                            
-                            # Recursively process the child file
-                            extract_textures(child_path, outdir, api_key=api_key)
-                        except Exception as e:
-                            print(f"Error downloading child content: {e}")
-                    else:
-                        print(f"Warning: Child without content URI found. Attempting to inspect further.")
-                        # Log additional details about the child node
-                        print(f"Child keys: {list(child.keys())}")
-                        if 'boundingVolume' in child:
-                            print(f"Bounding volume: {child['boundingVolume']}")
-                        if 'geometricError' in child:
-                            print(f"Geometric error: {child['geometricError']}")
-            else:
-                print("No children found in tileset JSON. Ensure the tileset contains valid references.")
-                print("JSON metadata keys:", list(data.keys()))
-        except Exception as e:
-            print(f"Error processing JSON file: {e}")
-            import traceback
-            traceback.print_exc()
-        return
-    
-    # Skip unsupported file types
+    # Only process .glb/.b3dm/.gltf for textures
     if ext not in ['.glb', '.b3dm', '.gltf']:
         print(f"Unsupported file type: {ext} for file {tile_path}")
         return
-    
     try:
         print(f"Extracting textures from {ext} file: {tile_path}")
-        # strip off the 28-byte B3DM header if needed
         with open(tile_path, "rb") as f:
             magic = f.read(4)
             f.seek(0)
             if magic == b"b3dm":
                 print("Detected b3dm format, skipping 28-byte header")
-                f.seek(28)  # skip header
+                f.seek(28)
             glb_data = f.read()
-        
-        # Ensure we have enough data to process
         if len(glb_data) < 100:
             print(f"Warning: File {tile_path} is too small ({len(glb_data)} bytes), may not be a valid GLB/GLTF file")
             return
-            
         try:
-            # Load GLTF in-memory
             print(f"Loading GLTF data from file size {len(glb_data)} bytes")
             gltf = GLTF2.load_from_bytes(glb_data)
-            
-            # Check if there are any images
-            if not hasattr(gltf, 'images') or not gltf.images:
+            images = getattr(gltf, 'images', None)
+            if not images or not isinstance(images, list):
                 print(f"No images found in {tile_path}")
                 return
-                
-            print(f"Found {len(gltf.images)} images in {tile_path}")
-            
-            for idx, img in enumerate(gltf.images):
-                print(f"Processing image {idx+1}/{len(gltf.images)}")
-                # Handle images with bufferView reference
+            print(f"Found {len(images)} images in {tile_path}")
+            for idx, img in enumerate(images):
+                print(f"Processing image {idx+1}/{len(images)}")
+                bufferViews = getattr(gltf, 'bufferViews', None)
+                buffers = getattr(gltf, 'buffers', None)
                 if hasattr(img, 'bufferView') and img.bufferView is not None:
                     try:
-                        # Ensure we have bufferViews
-                        if not hasattr(gltf, 'bufferViews') or img.bufferView >= len(gltf.bufferViews):
+                        if not bufferViews or img.bufferView >= len(bufferViews):
                             print(f"Warning: Invalid bufferView index {img.bufferView} for image in {tile_path}")
                             continue
-                            
-                        # Get buffer view
-                        buffer_view = gltf.bufferViews[img.bufferView]
-                        # Find which buffer this view references
+                        buffer_view = bufferViews[img.bufferView]
                         buffer_index = buffer_view.buffer
-                        
-                        # Ensure the buffer index is valid
-                        if not hasattr(gltf, 'buffers') or buffer_index >= len(gltf.buffers):
+                        if not buffers or buffer_index >= len(buffers):
                             print(f"Warning: Invalid buffer index {buffer_index} for image in {tile_path}")
                             continue
-                            
-                        # Get byte offset and length
-                        byte_offset = buffer_view.byteOffset or 0
-                        byte_length = buffer_view.byteLength
-                        
-                        # Determine image format & extension from MIME type if available
-                        ext = ".jpg"  # Default extension
+                        byte_offset = getattr(buffer_view, 'byteOffset', 0) or 0
+                        byte_length = getattr(buffer_view, 'byteLength', 0)
+                        ext = ".jpg"
                         if hasattr(img, 'mimeType'):
                             if img.mimeType == "image/jpeg":
                                 ext = ".jpg"
                             elif img.mimeType == "image/png":
                                 ext = ".png"
-                        
                         img_filename = f"image_{idx}_{buffer_index}_{byte_offset}{ext}"
                         out = os.path.join(outdir, img_filename)
-                        
                         print(f"Extracting image to {out} (offset={byte_offset}, length={byte_length})")
                         if len(glb_data) < byte_offset + byte_length:
                             print(f"Warning: Buffer overflow - file size {len(glb_data)}, but need offset {byte_offset} + length {byte_length}")
                             continue
-                            
-                        # Extract bytes from the buffer
                         img_bytes = glb_data[byte_offset:byte_offset + byte_length]
                         with open(out, "wb") as wf: wf.write(img_bytes)
                         print(f"Successfully extracted {len(img_bytes)} bytes to {out}")
@@ -310,14 +194,10 @@ def extract_textures(tile_path, outdir, api_key=None):
                         print(f"Error extracting buffered image: {e}")
                         import traceback
                         traceback.print_exc()
-                # Handle images with URI - could be external or data URI
                 elif hasattr(img, 'uri') and img.uri:
                     uri = img.uri
-                    # Make sure the filename is safe
                     safe_name = os.path.basename(uri.split("?")[0]) if uri and not uri.startswith("data:") else f"img_{idx}.jpg"
                     out = os.path.join(outdir, safe_name)
-                    
-                    # Data URI?
                     if uri.startswith("data:"):
                         try:
                             print(f"Extracting data URI image to {out}")
@@ -372,7 +252,7 @@ def reproject_and_mosaic(src_dir, mosaic_path):
                 if not src.crs:
                     print(f"Warning: {fn} has no CRS information, creating default CRS")
                     # For images without CRS, set a default CRS (WGS84)
-                    default_transform = rasterio.transform.from_bounds(
+                    default_transform = from_bounds(
                         west=0, south=0, east=1, north=1, width=src.width, height=src.height
                     )
                     profile = src.profile.copy()
@@ -502,8 +382,13 @@ def create_xyz_tiles(mosaic, tile_folder):
             # Try to use Python's gdal module directly
             try:
                 print("Attempting to use Python GDAL module...")
-                from osgeo import gdal
-                from osgeo_utils import gdal2tiles
+                try:
+                    from osgeo import gdal
+                    from osgeo_utils import gdal2tiles
+                except ImportError as gdal_import_error:
+                    print("Could not import GDAL Python modules. Please install GDAL with 'pip install gdal'.")
+                    print(f"Import error: {gdal_import_error}")
+                    return False
                 
                 # Create a wrapper function to call gdal2tiles
                 def run_gdal2tiles():
@@ -826,7 +711,7 @@ def run_test_mode():
             
             # Create a transform for the image (slight offset for each image)
             # Make them overlap for proper mosaicking - using coordinates in London for better test data
-            transform = rasterio.transform.from_bounds(
+            transform = from_bounds(
                 west=-0.15 + i*0.02,      # left edge (approximate London longitude)
                 south=51.45 + i*0.02,      # bottom edge (approximate London latitude)
                 east=-0.05 + i*0.02,       # right edge
