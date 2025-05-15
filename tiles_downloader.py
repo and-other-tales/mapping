@@ -98,6 +98,12 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None, sessi
         url_hash = hashlib.md5(uri.encode()).hexdigest()
         fpath = os.path.join(outdir, f"tile_{url_hash}{ext if ext else '.bin'}")
 
+        # Always extract session param from this URI for all children
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(uri)
+        qs = parse_qs(parsed.query)
+        child_session = qs.get('session', [session_param])[0]
+
         if ext == ".json":
             # Download the child JSON and recurse
             if not os.path.exists(fpath):
@@ -110,10 +116,10 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None, sessi
                 child_json = json.load(f)
             # If this is a tileset, recurse into its root
             if "root" in child_json:
-                process_child_json(child_json["root"], session, outdir, depth + "  ", api_key, session_param)
+                process_child_json(child_json["root"], session, outdir, depth + "  ", api_key, child_session)
             else:
                 # Otherwise, process as a tile node
-                process_child_json(child_json, session, outdir, depth + "  ", api_key, session_param)
+                process_child_json(child_json, session, outdir, depth + "  ", api_key, child_session)
         elif ext in [".glb", ".b3dm"]:
             # Download and process the tile
             if not os.path.exists(fpath):
