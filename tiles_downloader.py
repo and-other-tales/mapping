@@ -40,7 +40,7 @@ OUTDIR  = "downloaded_tiles"  # Will be updated with city-specific path
 MOSAIC  = "mosaic_3857.tif"   # Will be updated with city-specific path
 TILEDIR = "tiles"             # Will be updated with city-specific path
 
-def fetch_tileset(url, session, outdir, api_key=None):
+def fetch_tileset(url, session, outdir, api_key=None, session_param=None):
     """Recursively download all tiles and extract textures."""
     if api_key is None:
         api_key = API_KEY
@@ -50,53 +50,67 @@ def fetch_tileset(url, session, outdir, api_key=None):
     resp.raise_for_status()
     data = resp.json()
 
-    def append_parameters(uri):
-        """Ensure the API key and session parameters are appended to the URL."""
-        session_param = f"session={session.cookies.get('session', '')}"
-        if "?" in uri:
-            if "key=" not in uri:
-                uri = f"{uri}&key={api_key}"
-            if "session=" not in uri:
-                uri = f"{uri}&{session_param}"
-        else:
-            uri = f"{uri}?key={api_key}&{session_param}"
-        return uri
+    # Extract session param from root tileset URI if present
+    if session_param is None:
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        session_param = qs.get('session', [None])[0]
 
-    # Process the root node
+    # Find the session param in the root tileset response if present
     if "root" in data:
         root = data["root"]
+        # Google API: children URIs may have ?session=... in them
         if "children" in root:
             for child in root["children"]:
                 if "content" in child and "uri" in child["content"]:
-                    child["content"]["uri"] = append_parameters(child["content"]["uri"])
+                    uri = child["content"]["uri"]
+                    # If the URI is relative, make it absolute
+                    if not uri.startswith("http"):
+                        uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
+                    # If session param is present in the URI, extract it
+                    from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
+                    parsed = urlparse(uri)
+                    qs = parse_qs(parsed.query)
+                    if 'session' in qs:
+                        session_param = qs['session'][0]
+                    # Always append key and session
+                    new_qs = dict(qs)
+                    new_qs['key'] = [api_key]
+                    if session_param:
+                        new_qs['session'] = [session_param]
+                    uri = parsed._replace(query=urlencode(new_qs, doseq=True)).geturl()
+                    child["content"]["uri"] = uri
 
     # Process children recursively
-    process_child_json(data, session, outdir, api_key=api_key)
+    process_child_json(data, session, outdir, api_key=api_key, session_param=session_param)
 
-def process_child_json(json_data, session, outdir, depth="", api_key=None):
+def process_child_json(json_data, session, outdir, depth="", api_key=None, session_param=None):
     """Process a JSON file to extract and download content URIs recursively."""
     if api_key is None:
         api_key = API_KEY
 
+    from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
+
     def append_parameters(uri):
-        session_param = f"session={session.cookies.get('session', '')}"
-        if "?" in uri:
-            if "key=" not in uri:
-                uri = f"{uri}&key={api_key}"
-            if "session=" not in uri:
-                uri = f"{uri}&{session_param}"
-        else:
-            uri = f"{uri}?key={api_key}&{session_param}"
-        return uri
+        parsed = urlparse(uri)
+        qs = parse_qs(parsed.query)
+        qs['key'] = [api_key]
+        if session_param:
+            qs['session'] = [session_param]
+        return parsed._replace(query=urlencode(qs, doseq=True)).geturl()
 
     # Recursively process children
     if "children" in json_data:
         for child in json_data["children"]:
-            process_child_json(child, session, outdir, depth + "  ", api_key)
+            process_child_json(child, session, outdir, depth + "  ", api_key, session_param)
 
     # Process this node's content if available
     if "content" in json_data and "uri" in json_data["content"]:
         uri = json_data["content"]["uri"]
+        # If the URI is relative, make it absolute
+        if not uri.startswith("http"):
+            uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
         uri = append_parameters(uri)
         ext = os.path.splitext(uri.split("?")[0])[1].lower()
         import hashlib
@@ -113,7 +127,7 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None):
                     shutil.copyfileobj(r.raw, f)
             with open(fpath, "r") as f:
                 child_json = json.load(f)
-            process_child_json(child_json, session, outdir, depth + "  ", api_key)
+            process_child_json(child_json, session, outdir, depth + "  ", api_key, session_param)
         elif ext in [".glb", ".b3dm"]:
             # Download and process the tile
             if not os.path.exists(fpath):
