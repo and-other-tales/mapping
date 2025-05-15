@@ -2,11 +2,11 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 import json
-from tiles_downloader import fetch_tileset, process_child_json, extract_textures
+from 3dtiles import fetch_tileset, process_child_json, extract_textures
 
 class Test3DTiles(unittest.TestCase):
 
-    @patch('requests.get')
+    @patch('requests.Session.get')
     def test_fetch_tileset(self, mock_get):
         # Mock the API response
         mock_response = MagicMock()
@@ -20,15 +20,21 @@ class Test3DTiles(unittest.TestCase):
         }
         mock_get.return_value = mock_response
 
-        # Call the function
+        # Mock session with cookies
         session = MagicMock()
-        fetch_tileset("https://example.com/tileset.json", session, "output_dir")
+        session.cookies.get.return_value = "mock_session_id"
+
+        # Call the function
+        fetch_tileset("https://example.com/tileset.json", session, "output_dir", api_key="mock_api_key")
 
         # Assertions
         mock_get.assert_called()
-        self.assertTrue(os.path.exists("output_dir"))
+        called_url = mock_get.call_args[0][0]
+        self.assertIn("key=mock_api_key", called_url)
+        self.assertIn("session=mock_session_id", called_url)
 
-    def test_process_child_json(self):
+    @patch('requests.Session.get')
+    def test_process_child_json(self, mock_get):
         # Mock JSON data
         json_data = {
             "children": [
@@ -37,14 +43,23 @@ class Test3DTiles(unittest.TestCase):
             ]
         }
 
-        # Mock session
+        # Mock session with cookies
         session = MagicMock()
+        session.cookies.get.return_value = "mock_session_id"
+
+        # Mock the API response
+        mock_response = MagicMock()
+        mock_response.json.return_value = {}
+        mock_get.return_value = mock_response
 
         # Call the function
-        process_child_json(json_data, session, "output_dir")
+        process_child_json(json_data, session, "output_dir", api_key="mock_api_key")
 
         # Assertions
-        self.assertTrue(os.path.exists("output_dir"))
+        mock_get.assert_called()
+        called_url = mock_get.call_args[0][0]
+        self.assertIn("key=mock_api_key", called_url)
+        self.assertIn("session=mock_session_id", called_url)
 
     def test_extract_textures(self):
         # Mock a GLTF file
