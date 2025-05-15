@@ -78,7 +78,6 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None, sessi
         qs['key'] = [api_key]
         if session_param:
             qs['session'] = [session_param]
-        # Remove duplicate keys
         new_query = urlencode(qs, doseq=True)
         return parsed._replace(query=new_query).geturl()
 
@@ -88,12 +87,11 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None, sessi
             process_child_json(child, session, outdir, depth + "  ", api_key, session_param)
 
     # Process this node's content if available
-    if "content" in json_data and "uri" in json_data["content"]:
-        uri = json_data["content"]["uri"]
-        # If the URI is relative, make it absolute
+    content = json_data.get("content", {})
+    uri = content.get("uri") or content.get("url")
+    if uri:
         if not uri.startswith("http"):
             uri = f"https://tile.googleapis.com{uri if uri.startswith('/') else '/' + uri}"
-        # Always append/replace key and session
         uri = append_parameters(uri, api_key, session_param)
         ext = os.path.splitext(uri.split("?")[0])[1].lower()
         import hashlib
@@ -110,11 +108,12 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None, sessi
                     shutil.copyfileobj(r.raw, f)
             with open(fpath, "r") as f:
                 child_json = json.load(f)
-            # Extract session param from this URI if present
-            parsed = urlparse(uri)
-            qs = parse_qs(parsed.query)
-            child_session = qs.get('session', [session_param])[0]
-            process_child_json(child_json, session, outdir, depth + "  ", api_key, child_session)
+            # If this is a tileset, recurse into its root
+            if "root" in child_json:
+                process_child_json(child_json["root"], session, outdir, depth + "  ", api_key, session_param)
+            else:
+                # Otherwise, process as a tile node
+                process_child_json(child_json, session, outdir, depth + "  ", api_key, session_param)
         elif ext in [".glb", ".b3dm"]:
             # Download and process the tile
             if not os.path.exists(fpath):
@@ -124,7 +123,7 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None, sessi
                     import shutil
                     shutil.copyfileobj(r.raw, f)
             extract_textures(fpath, outdir, api_key=api_key)
-        # else: ignore other file types
+    # else: ignore other file types or nodes without content
 
 def extract_textures(tile_path, outdir, api_key=None):
     """Pull out all images in the GLTF chunk of a .b3dm/.glb or process nested JSON metadata."""
