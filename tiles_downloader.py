@@ -947,60 +947,25 @@ if __name__ == "__main__":
         print(f"Mosaic path: {MOSAIC}")
         print(f"Tiles directory: {TILEDIR}")
         
-        # Use different URLs depending on whether we're in test mode or not
-        if CITY.lower() == "test":
-            print("Running in test mode. Using local test files instead of API.")
-            test_dir = run_test_mode()
-            print(f"Test files created in {test_dir}")
-            try:
-                print(f"Reprojecting and creating mosaic...")
-                mosaic_success = reproject_and_mosaic(test_dir, MOSAIC)
-                
-                if mosaic_success:
-                    print(f"Creating XYZ tiles...")
-                    tile_success = create_xyz_tiles(MOSAIC, TILEDIR)
-                    
-                    if tile_success:
-                        print("\nSuccess! XYZ tiles created.")
-                        print(f"Serve the folder: {BASE_DIR}")
-                        print(f"- Use any web server, e.g.: python -m http.server --directory {BASE_DIR}")
-                        print(f"- Open a web browser and navigate to http://localhost:8000/tiles/{city_dir}/")
-                    else:
-                        print("Failed to create XYZ tiles.")
-                        sys.exit(1)
-                else:
-                    print("Failed to create mosaic. Skipping tile creation.")
-                    sys.exit(1)
-            except Exception as e:
-                print(f"Error during test processing: {e}")
-                import traceback
-                traceback.print_exc()
-                sys.exit(1)
-            sys.exit(0)
-            
-        # Regular mode - proceed with API access
-        if not API_KEY:
-            print("Error: No API key provided. Set the GOOGLE_API_KEY environment variable.")
-            print("Example: export GOOGLE_API_KEY=your_actual_api_key")
-            sys.exit(1)
-            
-        # City coordinates (approximate centers)
-        city_coordinates = {
-            "London": {"lat": 51.5074, "lng": -0.1278},
-            "New York": {"lat": 40.7128, "lng": -74.0060},
-            "Tokyo": {"lat": 35.6762, "lng": 139.6503},
-            "Paris": {"lat": 48.8566, "lng": 2.3522},
-            "Berlin": {"lat": 52.5200, "lng": 13.4050},
-            "Sydney": {"lat": -33.8688, "lng": 151.2093},
-            "San Francisco": {"lat": 37.7749, "lng": -122.4194},
+        # City bounding boxes (approximate ranges)
+        city_bboxes = {
+            "London": {
+                "west": -0.5103, "south": 51.2868, "east": 0.3340, "north": 51.6919
+            },
+            "New York": {
+                "west": -74.2591, "south": 40.4774, "east": -73.7004, "north": 40.9176
+            },
+            "Tokyo": {
+                "west": 139.5596, "south": 35.5286, "east": 139.9205, "north": 35.8985
+            },
+            # Add more cities as needed
         }
         
-        # Get coordinates for the requested city, default to London if not found
-        coords = city_coordinates.get(CITY, city_coordinates["London"])
-        print(f"Using coordinates for {CITY}: {coords}")
+        bbox = city_bboxes.get(CITY, city_bboxes["London"])
+        print(f"Using bounding box for {CITY}: {bbox}")
         
         # Use the simplest API format as specified in the documentation
-        # The lat/lng parameters are not needed for the root request
+        # The root request does not require bbox, but you can use it for custom tile requests if needed
         root_url = f"https://tile.googleapis.com/v1/3dtiles/root.json?key={API_KEY}"
         sess = requests.Session()
         
