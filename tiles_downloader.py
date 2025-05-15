@@ -74,12 +74,11 @@ def fetch_tileset(url, session, outdir, api_key=None):
     process_child_json(data, session, outdir, api_key=api_key)
 
 def process_child_json(json_data, session, outdir, depth="", api_key=None):
-    """Process a JSON file to extract and download content URIs."""
+    """Process a JSON file to extract and download content URIs recursively."""
     if api_key is None:
         api_key = API_KEY
 
     def append_parameters(uri):
-        """Ensure the API key and session parameters are appended to the URL."""
         session_param = f"session={session.cookies.get('session', '')}"
         if "?" in uri:
             if "key=" not in uri:
@@ -90,18 +89,41 @@ def process_child_json(json_data, session, outdir, depth="", api_key=None):
             uri = f"{uri}?key={api_key}&{session_param}"
         return uri
 
+    # Recursively process children
     if "children" in json_data:
         for child in json_data["children"]:
-            if "content" in child and "uri" in child["content"]:
-                child["content"]["uri"] = append_parameters(child["content"]["uri"])
+            process_child_json(child, session, outdir, depth + "  ", api_key)
 
-    # Process content URIs
+    # Process this node's content if available
     if "content" in json_data and "uri" in json_data["content"]:
-        json_data["content"]["uri"] = append_parameters(json_data["content"]["uri"])
+        uri = json_data["content"]["uri"]
+        uri = append_parameters(uri)
+        ext = os.path.splitext(uri.split("?")[0])[1].lower()
+        import hashlib
+        url_hash = hashlib.md5(uri.encode()).hexdigest()
+        fpath = os.path.join(outdir, f"tile_{url_hash}{ext if ext else '.bin'}")
 
-    # Continue processing recursively
-    for child in json_data.get("children", []):
-        process_child_json(child, session, outdir, depth + "  ", api_key)
+        if ext == ".json":
+            # Download the child JSON and recurse
+            if not os.path.exists(fpath):
+                r = session.get(uri, stream=True)
+                r.raise_for_status()
+                with open(fpath, "wb") as f:
+                    import shutil
+                    shutil.copyfileobj(r.raw, f)
+            with open(fpath, "r") as f:
+                child_json = json.load(f)
+            process_child_json(child_json, session, outdir, depth + "  ", api_key)
+        elif ext in [".glb", ".b3dm"]:
+            # Download and process the tile
+            if not os.path.exists(fpath):
+                r = session.get(uri, stream=True)
+                r.raise_for_status()
+                with open(fpath, "wb") as f:
+                    import shutil
+                    shutil.copyfileobj(r.raw, f)
+            extract_textures(fpath, outdir, api_key=api_key)
+        # else: ignore other file types
 
 def extract_textures(tile_path, outdir, api_key=None):
     """Pull out all images in the GLTF chunk of a .b3dm/.glb or process nested JSON metadata."""
